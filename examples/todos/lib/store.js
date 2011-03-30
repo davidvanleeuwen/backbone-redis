@@ -105,10 +105,9 @@
         sync : function(key, collection, name, method, model, callback) {
             if ( !key )         throw "Must provide a key";
             if ( !name )        throw "Must provide a name";
-            
+			
             // Wait for the server to return the connectCallback data
             this.on("sync:" + collection + ":data", callback);
-            
             // This method will fire off when Store receives a socket 
             // transport from the server matching the key for 'this.on()'
             var connectCallback = this.proxy(function() {
@@ -140,14 +139,17 @@
         trigger : function() {
             var args = [];
             for (var f=0; f < arguments.length; f++) args.push(arguments[f]);
-            
-            var name    = args.shift();
+			
+            var name = args.shift();
 
             var callbacks = this.handlers[name];
             if ( !callbacks ) return;
 
-            for(var i=0, len = callbacks.length; i < len; i++)
-                callbacks[i].apply(this, args);
+            for(var i=0; i < callbacks.length; i++) {
+				// something is going wrong when initializing the current 'state' (collection)
+				callbacks[i].apply(this, args);
+			}
+               	
         },
 
         writeMeta : function() {
@@ -175,7 +177,7 @@
         onmessage : function(data) {
             var message = Store.Message.fromJSON(data);
             this.trigger("message", message);
-            
+			
             // Redis subscriptions
             if (message.channel) {
                 var publish;
@@ -250,19 +252,18 @@
     
     // Override `Backbone.sync` to use delegate to the model or collection's
     // *localStorage* property, which should be an instance of `Store`.
-    Backbone.sync = function(method, model, options) {
+    Backbone.sync = function(method, model, success, error) {
         var getUrl = function(object) {
             if (!(object && object.url)) return null;
             return _.isFunction(object.url) ? object.url() : object.url;
         };
-               
-        var url = options.url || getUrl(model);
+        var url = getUrl(model);
         var curl = (model instanceof Backbone.Model) ? getUrl(model.collection) : url;
         var name = model.storage || model.collection.storage;
         var syncMethod = '';
         
         // We will only get a direct response on a read
-        if (method !== "read") delete options;
+        //if (method !== "read") delete model;
         
         switch (method) {        
             case "create" :  syncMethod = "create"; break;            
@@ -285,11 +286,12 @@
         // the syncronization channel in Store/redis, all new actions 
         // will be routed through this callback.  On non-reads the client 
         // only needs to tell the server what needs to be done
-        syncCallback = (method !== "read") ? function() {} : function(results) {        
+        syncCallback = (method !== "read") ? function() {} : function(results) {
             if (!results) {
                 options.error("Record not found");
                 return;
             }
+			
             var serverModel;                
             if (results instanceof Store.Message) {
                 serverModel = JSON.parse(results.model);
@@ -299,12 +301,11 @@
             
             // Is this a generated server event?
             if (results.method !== syncMethod) {
-            
+				
                 // We can assume that the subscription was made on the 'READ'
                 // event, which serves as the transport for updates from other 
                 // users on the application, re-delegate incomming server methods
                 if (model instanceof Backbone.Model) {
-                
                     // Perform model actions
                     switch (results.method) {
                         case "create"  : throw "Cannot create model without collection"; break;                  
@@ -315,19 +316,22 @@
                 }
                 
                 // Perform collection actions
-                switch (results.method) {
-                    case "create"  : model.add(serverModel); break;                    
-                    case "update"  : model.get(serverModel).set(serverModel); break;                    
-                    case "destroy" : model.remove(serverModel); break;
-                }
-                return;
+				if(model instanceof Backbone.Collection) {
+					switch (results.method) {
+						case "create"  : model.add(serverModel); break;                    
+						case "update"  : model.get(serverModel.id).set(serverModel); break;                    
+						case "destroy" : model.remove(serverModel); break;
+					}
+					return;
+				}
+               
             }
-            options.success(serverModel);
+            success(serverModel);
             
             delete options;
             delete serverModel;
         };
-              
+		
         window.store.sync(url, curl, name, syncMethod, model, syncCallback);
     };    
 })()
